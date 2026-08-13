@@ -1,1 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reroute — Live Traffic Rerouting Simulator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <div>
+        <p class="eyebrow">TRAFFIC CONTROL</p>
+        <h1>Reroute Simulator</h1>
+      </div>
+    </div>
+    <div class="status-pill" id="live-pill">
+      <span class="dot"></span> LIVE
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="board">
+      <canvas id="grid" width="800" height="600" aria-label="City road grid, click a road segment to block or unblock it"></canvas>
+      <div class="board-caption">Click any road segment to simulate a closure. The route recalculates instantly.</div>
+    </section>
+
+    <aside class="console" aria-label="Route status console">
+      <div class="console-block">
+        <p class="label">ETA</p>
+        <p class="eta" id="eta-value">— <span class="unit">units</span></p>
+        <p class="sub" id="eta-delta"></p>
+      </div>
+
+      <div class="console-block">
+        <p class="label">Active path</p>
+        <p class="mono-line" id="path-value">—</p>
+      </div>
+
+      <div class="console-block">
+        <p class="label">Roads closed</p>
+        <p class="mono-line" id="blocked-count">0</p>
+      </div>
+
+      <div class="console-block log-block">
+        <p class="label">Dispatch log</p>
+        <ul class="log" id="event-log"></ul>
+      </div>
+
+      <div class="controls">
+        <button id="btn-randomize">Randomize traffic</button>
+        <button id="btn-reset" class="ghost">Clear closures</button>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="foot">
+    Dijkstra shortest-path recompute · vanilla JS + Canvas, no dependencies
+  </footer>
+
+<script src="app.js"></script>
+</body>
+</html>
 
