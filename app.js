@@ -1,12 +1,11 @@
 /**
  * Smart Traffic Reroute & Emergency Simulator
- * Features mid-transit dynamic diversion (Dijkstra) & real-time ETA recalculation.
+ * Mid-transit localized diversion & progress-aware ETA calculation
  */
 
 const canvas = document.getElementById('simCanvas');
 const ctx = canvas.getContext('2d');
 
-// --- GRID & GRAPH CONFIGURATION ---
 const COLS = 5;
 const ROWS = 4;
 const PADDING = 60;
@@ -19,12 +18,11 @@ let vehicle = null;
 let rerouteCount = 0;
 let isEmergency = false;
 
-// --- INITIALIZE GRAPH NODES & EDGES ---
+// --- GRAPH SETUP ---
 function buildGraph() {
   nodes = [];
   edges = [];
   
-  // Create grid nodes
   let id = 0;
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
@@ -33,28 +31,20 @@ function buildGraph() {
     }
   }
 
-  // Create horizontal and vertical edges
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       let u = r * COLS + c;
-      if (c < COLS - 1) { // Right neighbor
-        let v = r * COLS + (c + 1);
-        edges.push({ u, v, weight: 1.0, blocked: false });
-      }
-      if (r < ROWS - 1) { // Bottom neighbor
-        let v = (r + 1) * COLS + c;
-        edges.push({ u, v, weight: 1.0, blocked: false });
-      }
+      if (c < COLS - 1) edges.push({ u, v: r * COLS + (c + 1), weight: 1.0, blocked: false });
+      if (r < ROWS - 1) edges.push({ u, v: (r + 1) * COLS + c, weight: 1.0, blocked: false });
     }
   }
 }
 
-// Helper: Get Edge between two node IDs
 function getEdge(u, v) {
   return edges.find(e => (e.u === u && e.v === v) || (e.u === v && e.v === u));
 }
 
-// --- DIJKSTRA SHORTEST PATH ALGORITHM ---
+// --- DIJKSTRA SHORTEST PATH ---
 function runDijkstra(startNodeId, targetNodeId) {
   let dist = {};
   let prev = {};
@@ -81,7 +71,6 @@ function runDijkstra(startNodeId, targetNodeId) {
     if (current === null || current === targetNodeId) break;
     unvisited.delete(current);
 
-    // Find valid neighbors
     edges.forEach(e => {
       if (e.blocked) return;
       let neighbor = null;
@@ -98,7 +87,6 @@ function runDijkstra(startNodeId, targetNodeId) {
     });
   }
 
-  // Reconstruct path
   let path = [];
   let curr = targetNodeId;
   while (curr !== null) {
@@ -106,10 +94,10 @@ function runDijkstra(startNodeId, targetNodeId) {
     curr = prev[curr];
   }
 
-  return (path.length > 1 && path[0] === startNodeId) ? path : null;
+  return (path.length > 0 && path[0] === startNodeId) ? path : null;
 }
 
-// --- VEHICLE INITIALIZATION & REROUTING LOGIC ---
+// --- VEHICLE & REROUTE ENGINE ---
 function initVehicle() {
   const startId = 0;
   const targetId = nodes.length - 1;
@@ -118,65 +106,87 @@ function initVehicle() {
   vehicle = {
     path: path,
     pathIndex: 0,
-    progress: 0, // 0 to 1 along current segment
-    speed: 0.008, // Base speed factor per frame
+    progress: 0, 
+    speed: 0.008,
     targetId: targetId
   };
   rerouteCount = 0;
   isEmergency = false;
   updateUI();
-  logEvent("Simulation started. Route: Node 0 → Node " + targetId);
+  logEvent("Simulation started. Initial Route: " + path.join(" → "));
 }
 
-// Core Requirement: Mid-Transit Diversion calculation
-function triggerReroute(reason) {
-  if (!vehicle || vehicle.pathIndex >= vehicle.path.length - 1) return;
+/**
+ * FIXED: Localized Diversion Engine
+ * Keeps already traversed nodes locked, diverts strictly from the next reachable intersection.
+ */
+function handleRoadBlockage(blockedEdge) {
+  if (!vehicle || !vehicle.path || vehicle.pathIndex >= vehicle.path.length - 1) return;
 
-  // The vehicle must divert starting from the NEXT reachable node on its current path
-  const currentDiversionNode = vehicle.path[vehicle.pathIndex + 1];
-  
-  // Find path from the current node forward to destination
-  const newPath = runDijkstra(currentDiversionNode, vehicle.targetId);
-
-  if (newPath) {
-    // Retain path up to current diversion point and append new computed route
-    const traversedPart = vehicle.path.slice(0, vehicle.pathIndex + 1);
-    vehicle.path = traversedPart.concat(newPath);
-    rerouteCount++;
-    logEvent(`⚡ Diverted at Node ${currentDiversionNode}! Reason: ${reason}`);
-  } else {
-    logEvent(`❌ Path blocked from Node ${currentDiversionNode}! Destination unreachable.`);
-    vehicle.path = null; // Stalled
+  // Check if the blocked edge is on the vehicle's remaining path
+  let blockedIndexInPath = -1;
+  for (let i = vehicle.pathIndex; i < vehicle.path.length - 1; i++) {
+    const u = vehicle.path[i];
+    const v = vehicle.path[i + 1];
+    if ((blockedEdge.u === u && blockedEdge.v === v) || (blockedEdge.u === v && blockedEdge.v === u)) {
+      blockedIndexInPath = i;
+      break;
+    }
   }
+
+  // If the blockage doesn't affect the active route, do nothing
+  if (blockedIndexInPath === -1) return;
+
+  logEvent(`⚠️ Road Blockage detected ahead between Node ${blockedEdge.u} ↔ Node ${blockedEdge.v}`);
+
+  // Determine diversion anchor node:
+  // If the current segment itself is blocked, divert from the node the vehicle is actively heading TOWARD.
+  // Otherwise, divert from the start of the blocked segment.
+  const diversionStartNode = vehicle.path[vehicle.pathIndex + 1];
+
+  // Run Dijkstra ONLY from the diversion anchor to destination
+  const detourPath = runDijkstra(diversionStartNode, vehicle.targetId);
+
+  if (detourPath) {
+    // Lock the already traveled part up to diversionStartNode
+    const lockedPart = vehicle.path.slice(0, vehicle.pathIndex + 2);
+    
+    // Stitch locked nodes + new detour (excluding duplicate start node of detour)
+    vehicle.path = lockedPart.concat(detourPath.slice(1));
+    rerouteCount++;
+    logEvent(`⚡ Diverted locally from Node ${diversionStartNode}! New path: ${vehicle.path.slice(vehicle.pathIndex).join(" → ")}`);
+  } else {
+    logEvent(`🚨 CRITICAL: No alternate path exists from Node ${diversionStartNode}! Vehicle stalled.`);
+    vehicle.path = null;
+  }
+
   updateUI();
 }
 
-// Calculate remaining trip duration (ETA)
+// --- ETA CALCULATION ---
 function calculateRemainingETA() {
   if (!vehicle || !vehicle.path) return "N/A";
   
   let remainingWeight = 0;
-  // Remaining portion of current edge
   const u = vehicle.path[vehicle.pathIndex];
   const v = vehicle.path[vehicle.pathIndex + 1];
   const currentEdge = getEdge(u, v);
+  
   if (currentEdge) {
     remainingWeight += (1 - vehicle.progress) * currentEdge.weight;
   }
 
-  // Rest of edges in path
   for (let i = vehicle.pathIndex + 1; i < vehicle.path.length - 1; i++) {
     let edge = getEdge(vehicle.path[i], vehicle.path[i + 1]);
     if (edge) remainingWeight += edge.weight;
   }
 
-  // Convert weight units to seconds (scaled for demo visualization)
   const baseSpeed = isEmergency ? vehicle.speed * 2 : vehicle.speed;
   const seconds = (remainingWeight / (baseSpeed * 60)).toFixed(1);
   return `${seconds} s`;
 }
 
-// --- RENDER & ANIMATION LOOP ---
+// --- RENDER LOOP ---
 function update() {
   if (vehicle && vehicle.path && vehicle.pathIndex < vehicle.path.length - 1) {
     const activeSpeed = isEmergency ? vehicle.speed * 2 : vehicle.speed;
@@ -187,7 +197,7 @@ function update() {
       vehicle.pathIndex++;
 
       if (vehicle.pathIndex >= vehicle.path.length - 1) {
-        logEvent("🎉 Vehicle reached destination!");
+        logEvent("🎉 Destination reached!");
       }
     }
     document.getElementById('etaText').innerText = calculateRemainingETA();
@@ -197,47 +207,45 @@ function update() {
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // 1. Draw Edges (Roads)
+  // Draw Roads
   edges.forEach(e => {
     const n1 = nodes[e.u];
     const n2 = nodes[e.v];
-
     ctx.beginPath();
     ctx.moveTo(n1.x, n1.y);
     ctx.lineTo(n2.x, n2.y);
     ctx.lineWidth = 6;
-    ctx.strokeStyle = e.blocked ? '#ef4444' : '#334155'; // Red if blocked
+    ctx.strokeStyle = e.blocked ? '#ef4444' : '#334155';
     ctx.stroke();
   });
 
-  // 2. Highlight Planned Route
+  // Highlight Current Path
   if (vehicle && vehicle.path) {
     ctx.beginPath();
-    for (let i = 0; i < vehicle.path.length - 1; i++) {
+    for (let i = vehicle.pathIndex; i < vehicle.path.length - 1; i++) {
       const n1 = nodes[vehicle.path[i]];
       const n2 = nodes[vehicle.path[i + 1]];
       ctx.moveTo(n1.x, n1.y);
       ctx.lineTo(n2.x, n2.y);
     }
     ctx.lineWidth = 4;
-    ctx.strokeStyle = isEmergency ? '#f59e0b' : '#38bdf8'; // Amber for emergency, Blue for standard
+    ctx.strokeStyle = isEmergency ? '#f59e0b' : '#38bdf8';
     ctx.stroke();
   }
 
-  // 3. Draw Nodes (Intersections)
+  // Draw Intersections
   nodes.forEach(n => {
     ctx.beginPath();
     ctx.arc(n.x, n.y, 8, 0, Math.PI * 2);
     ctx.fillStyle = (n.id === 0) ? '#22c55e' : (n.id === nodes.length - 1) ? '#e11d48' : '#64748b';
     ctx.fill();
 
-    // Node labels
     ctx.fillStyle = '#94a3b8';
     ctx.font = '10px sans-serif';
     ctx.fillText(`N${n.id}`, n.x - 6, n.y - 12);
   });
 
-  // 4. Draw Vehicle
+  // Draw Vehicle
   if (vehicle && vehicle.path && vehicle.pathIndex < vehicle.path.length - 1) {
     const u = nodes[vehicle.path[vehicle.pathIndex]];
     const v = nodes[vehicle.path[vehicle.pathIndex + 1]];
@@ -261,36 +269,31 @@ function gameLoop() {
   requestAnimationFrame(gameLoop);
 }
 
-// --- INTERACTIVITY & EVENT HANDLERS ---
+// --- CLICK INTERACTION ---
 canvas.addEventListener('click', (evt) => {
   const rect = canvas.getBoundingClientRect();
   const clickX = evt.clientX - rect.left;
   const clickY = evt.clientY - rect.top;
 
-  // Toggle nearest road segment on click
   edges.forEach(e => {
     const n1 = nodes[e.u];
     const n2 = nodes[e.v];
     const distToSegment = distToSegmentSquared({ x: clickX, y: clickY }, n1, n2);
 
-    if (distToSegment < 100) { // Click tolerance threshold
+    if (distToSegment < 100) {
       e.blocked = !e.blocked;
       logEvent(`🚧 Road (Node ${e.u} ↔ Node ${e.v}) ${e.blocked ? 'BLOCKED' : 'UNBLOCKED'}`);
       
-      // Re-evaluate path from vehicle's current location if road ahead was blocked
-      triggerReroute("Road Closure Event");
+      if (e.blocked) {
+        handleRoadBlockage(e);
+      }
     }
   });
 });
 
 document.getElementById('btnDispatchEmergency').addEventListener('click', () => {
   isEmergency = !isEmergency;
-  if (isEmergency) {
-    logEvent("🚨 Emergency Mode Activated! Green-wave priority cleared.");
-    triggerReroute("Emergency Dispatch Protocol");
-  } else {
-    logEvent("ℹ️ Returned to normal transit mode.");
-  }
+  logEvent(isEmergency ? "🚨 Emergency Green-Wave Activated!" : "ℹ️ Normal Mode Restored.");
   updateUI();
 });
 
@@ -300,7 +303,7 @@ document.getElementById('btnReset').addEventListener('click', () => {
 });
 
 function updateUI() {
-  document.getElementById('statusText').innerText = isEmergency ? "🚨 EMERGENCY PRIORITY" : "In Transit (Normal)";
+  document.getElementById('statusText').innerText = isEmergency ? "🚨 EMERGENCY PRIORITY" : "In Transit";
   document.getElementById('rerouteCountText').innerText = `${rerouteCount} times`;
   if (vehicle && vehicle.path && vehicle.pathIndex < vehicle.path.length - 1) {
     document.getElementById('currentPosText').innerText = `Node ${vehicle.path[vehicle.pathIndex]} → Node ${vehicle.path[vehicle.pathIndex + 1]}`;
@@ -315,7 +318,6 @@ function logEvent(msg) {
   logContainer.prepend(entry);
 }
 
-// Helper: Distance squared from point to line segment
 function distToSegmentSquared(p, v, w) {
   const l2 = (v.x - w.x) ** 2 + (v.y - w.y) ** 2;
   if (l2 === 0) return (p.x - v.x) ** 2 + (p.y - v.y) ** 2;
@@ -324,7 +326,6 @@ function distToSegmentSquared(p, v, w) {
   return (p.x - (v.x + t * (w.x - v.x))) ** 2 + (p.y - (v.y + t * (w.y - v.y))) ** 2;
 }
 
-// --- INIT ---
 buildGraph();
 initVehicle();
 gameLoop();
