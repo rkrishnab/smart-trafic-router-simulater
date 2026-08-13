@@ -1,254 +1,330 @@
-/* ---------- Grid graph setup ---------- */
-const ROWS = 6, COLS = 8;
-const canvas = document.getElementById('grid');
-const ctx = canvas.getContext('2d');
-const PAD = 50;
-const cellW = (canvas.width - PAD * 2) / (COLS - 1);
-const cellH = (canvas.height - PAD * 2) / (ROWS - 1);
+/**
+ * Smart Traffic Reroute & Emergency Simulator
+ * Features mid-transit dynamic diversion (Dijkstra) & real-time ETA recalculation.
+ */
 
-const nodeId = (r, c) => r * COLS + c;
-const nodePos = (r, c) => ({ x: PAD + c * cellW, y: PAD + r * cellH });
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- GRID & GRAPH CONFIGURATION ---
+const COLS = 5;
+const ROWS = 4;
+const PADDING = 60;
+const SPACING_X = (canvas.width - PADDING * 2) / (COLS - 1);
+const SPACING_Y = (canvas.height - PADDING * 2) / (ROWS - 1);
 
 let nodes = [];
-let edges = []; // {a, b, weight, blocked}
-let edgeMap = new Map(); // "a-b" -> edge
+let edges = [];
+let vehicle = null;
+let rerouteCount = 0;
+let isEmergency = false;
 
-function edgeKey(a, b) { return a < b ? `${a}-${b}` : `${b}-${a}`; }
-
-function buildGrid() {
+// --- INITIALIZE GRAPH NODES & EDGES ---
+function buildGraph() {
   nodes = [];
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      nodes.push({ id: nodeId(r, c), r, c, ...nodePos(r, c) });
-    }
-  }
   edges = [];
-  edgeMap.clear();
+  
+  // Create grid nodes
+  let id = 0;
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      const a = nodeId(r, c);
-      if (c < COLS - 1) addEdge(a, nodeId(r, c + 1));
-      if (r < ROWS - 1) addEdge(a, nodeId(r + 1, c));
+      nodes.push({ id, x: PADDING + c * SPACING_X, y: PADDING + r * SPACING_Y, row: r, col: c });
+      id++;
     }
   }
-}
 
-function addEdge(a, b) {
-  const weight = 2 + Math.floor(Math.random() * 8); // 2..9
-  const e = { a, b, weight, blocked: false };
-  edges.push(e);
-  edgeMap.set(edgeKey(a, b), e);
-}
-
-const SOURCE = nodeId(0, 0);
-const DEST = nodeId(ROWS - 1, COLS - 1);
-
-/* ---------- Dijkstra ---------- */
-function shortestPath() {
-  const dist = new Array(nodes.length).fill(Infinity);
-  const prev = new Array(nodes.length).fill(-1);
-  const visited = new Array(nodes.length).fill(false);
-  dist[SOURCE] = 0;
-
-  const adj = new Map();
-  nodes.forEach(n => adj.set(n.id, []));
-  edges.forEach(e => {
-    if (e.blocked) return;
-    adj.get(e.a).push({ to: e.b, w: e.weight });
-    adj.get(e.b).push({ to: e.a, w: e.weight });
-  });
-
-  for (let i = 0; i < nodes.length; i++) {
-    let u = -1, best = Infinity;
-    for (let n = 0; n < nodes.length; n++) {
-      if (!visited[n] && dist[n] < best) { best = dist[n]; u = n; }
-    }
-    if (u === -1) break;
-    visited[u] = true;
-    for (const { to, w } of adj.get(u)) {
-      if (dist[u] + w < dist[to]) {
-        dist[to] = dist[u] + w;
-        prev[to] = u;
+  // Create horizontal and vertical edges
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      let u = r * COLS + c;
+      if (c < COLS - 1) { // Right neighbor
+        let v = r * COLS + (c + 1);
+        edges.push({ u, v, weight: 1.0, blocked: false });
+      }
+      if (r < ROWS - 1) { // Bottom neighbor
+        let v = (r + 1) * COLS + c;
+        edges.push({ u, v, weight: 1.0, blocked: false });
       }
     }
   }
-
-  if (dist[DEST] === Infinity) return { path: [], total: Infinity };
-  const path = [];
-  let cur = DEST;
-  while (cur !== -1) { path.unshift(cur); cur = prev[cur]; }
-  return { path, total: dist[DEST] };
 }
 
-/* ---------- State ---------- */
-let current = { path: [], total: Infinity };
-let previousTotal = Infinity;
-let dashOffset = 0;
-const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+// Helper: Get Edge between two node IDs
+function getEdge(u, v) {
+  return edges.find(e => (e.u === u && e.v === v) || (e.u === v && e.v === u));
+}
 
-/* ---------- Rendering ---------- */
-function pathEdgeSet(path) {
-  const s = new Set();
-  for (let i = 0; i < path.length - 1; i++) s.add(edgeKey(path[i], path[i + 1]));
-  return s;
+// --- DIJKSTRA SHORTEST PATH ALGORITHM ---
+function runDijkstra(startNodeId, targetNodeId) {
+  let dist = {};
+  let prev = {};
+  let unvisited = new Set();
+
+  nodes.forEach(n => {
+    dist[n.id] = Infinity;
+    prev[n.id] = null;
+    unvisited.add(n.id);
+  });
+
+  dist[startNodeId] = 0;
+
+  while (unvisited.size > 0) {
+    let current = null;
+    let minDist = Infinity;
+    unvisited.forEach(id => {
+      if (dist[id] < minDist) {
+        minDist = dist[id];
+        current = id;
+      }
+    });
+
+    if (current === null || current === targetNodeId) break;
+    unvisited.delete(current);
+
+    // Find valid neighbors
+    edges.forEach(e => {
+      if (e.blocked) return;
+      let neighbor = null;
+      if (e.u === current) neighbor = e.v;
+      if (e.v === current) neighbor = e.u;
+
+      if (neighbor !== null && unvisited.has(neighbor)) {
+        let alt = dist[current] + e.weight;
+        if (alt < dist[neighbor]) {
+          dist[neighbor] = alt;
+          prev[neighbor] = current;
+        }
+      }
+    });
+  }
+
+  // Reconstruct path
+  let path = [];
+  let curr = targetNodeId;
+  while (curr !== null) {
+    path.unshift(curr);
+    curr = prev[curr];
+  }
+
+  return (path.length > 1 && path[0] === startNodeId) ? path : null;
+}
+
+// --- VEHICLE INITIALIZATION & REROUTING LOGIC ---
+function initVehicle() {
+  const startId = 0;
+  const targetId = nodes.length - 1;
+  const path = runDijkstra(startId, targetId);
+
+  vehicle = {
+    path: path,
+    pathIndex: 0,
+    progress: 0, // 0 to 1 along current segment
+    speed: 0.008, // Base speed factor per frame
+    targetId: targetId
+  };
+  rerouteCount = 0;
+  isEmergency = false;
+  updateUI();
+  logEvent("Simulation started. Route: Node 0 → Node " + targetId);
+}
+
+// Core Requirement: Mid-Transit Diversion calculation
+function triggerReroute(reason) {
+  if (!vehicle || vehicle.pathIndex >= vehicle.path.length - 1) return;
+
+  // The vehicle must divert starting from the NEXT reachable node on its current path
+  const currentDiversionNode = vehicle.path[vehicle.pathIndex + 1];
+  
+  // Find path from the current node forward to destination
+  const newPath = runDijkstra(currentDiversionNode, vehicle.targetId);
+
+  if (newPath) {
+    // Retain path up to current diversion point and append new computed route
+    const traversedPart = vehicle.path.slice(0, vehicle.pathIndex + 1);
+    vehicle.path = traversedPart.concat(newPath);
+    rerouteCount++;
+    logEvent(`⚡ Diverted at Node ${currentDiversionNode}! Reason: ${reason}`);
+  } else {
+    logEvent(`❌ Path blocked from Node ${currentDiversionNode}! Destination unreachable.`);
+    vehicle.path = null; // Stalled
+  }
+  updateUI();
+}
+
+// Calculate remaining trip duration (ETA)
+function calculateRemainingETA() {
+  if (!vehicle || !vehicle.path) return "N/A";
+  
+  let remainingWeight = 0;
+  // Remaining portion of current edge
+  const u = vehicle.path[vehicle.pathIndex];
+  const v = vehicle.path[vehicle.pathIndex + 1];
+  const currentEdge = getEdge(u, v);
+  if (currentEdge) {
+    remainingWeight += (1 - vehicle.progress) * currentEdge.weight;
+  }
+
+  // Rest of edges in path
+  for (let i = vehicle.pathIndex + 1; i < vehicle.path.length - 1; i++) {
+    let edge = getEdge(vehicle.path[i], vehicle.path[i + 1]);
+    if (edge) remainingWeight += edge.weight;
+  }
+
+  // Convert weight units to seconds (scaled for demo visualization)
+  const baseSpeed = isEmergency ? vehicle.speed * 2 : vehicle.speed;
+  const seconds = (remainingWeight / (baseSpeed * 60)).toFixed(1);
+  return `${seconds} s`;
+}
+
+// --- RENDER & ANIMATION LOOP ---
+function update() {
+  if (vehicle && vehicle.path && vehicle.pathIndex < vehicle.path.length - 1) {
+    const activeSpeed = isEmergency ? vehicle.speed * 2 : vehicle.speed;
+    vehicle.progress += activeSpeed;
+
+    if (vehicle.progress >= 1) {
+      vehicle.progress = 0;
+      vehicle.pathIndex++;
+
+      if (vehicle.pathIndex >= vehicle.path.length - 1) {
+        logEvent("🎉 Vehicle reached destination!");
+      }
+    }
+    document.getElementById('etaText').innerText = calculateRemainingETA();
+  }
 }
 
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const onPath = pathEdgeSet(current.path);
 
-  // roads
+  // 1. Draw Edges (Roads)
   edges.forEach(e => {
-    const na = nodes[e.a], nb = nodes[e.b];
-    const key = edgeKey(e.a, e.b);
-    ctx.beginPath();
-    ctx.moveTo(na.x, na.y);
-    ctx.lineTo(nb.x, nb.y);
+    const n1 = nodes[e.u];
+    const n2 = nodes[e.v];
 
-    if (e.blocked) {
-      ctx.strokeStyle = getVar('--road-blocked');
-      ctx.setLineDash([6, 6]);
-      ctx.lineWidth = 3;
-    } else if (onPath.has(key)) {
-      ctx.strokeStyle = getVar('--path');
-      ctx.setLineDash([10, 8]);
-      ctx.lineDashOffset = reduceMotion ? 0 : -dashOffset;
-      ctx.lineWidth = 5;
-    } else {
-      ctx.strokeStyle = getVar('--road');
-      ctx.setLineDash([]);
-      ctx.lineWidth = 2;
-    }
+    ctx.beginPath();
+    ctx.moveTo(n1.x, n1.y);
+    ctx.lineTo(n2.x, n2.y);
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = e.blocked ? '#ef4444' : '#334155'; // Red if blocked
     ctx.stroke();
-    ctx.setLineDash([]);
-
-    // weight label
-    const mx = (na.x + nb.x) / 2, my = (na.y + nb.y) / 2;
-    ctx.fillStyle = e.blocked ? getVar('--road-blocked') : getVar('--text-dim');
-    ctx.font = '10px JetBrains Mono, monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(e.weight, mx, my - 4);
   });
 
-  // nodes
-  nodes.forEach(n => {
-    let r = 5, fill = '#3a4757';
-    if (n.id === SOURCE) { r = 8; fill = getVar('--source'); }
-    if (n.id === DEST) { r = 8; fill = getVar('--dest'); }
+  // 2. Highlight Planned Route
+  if (vehicle && vehicle.path) {
     ctx.beginPath();
-    ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = fill;
+    for (let i = 0; i < vehicle.path.length - 1; i++) {
+      const n1 = nodes[vehicle.path[i]];
+      const n2 = nodes[vehicle.path[i + 1]];
+      ctx.moveTo(n1.x, n1.y);
+      ctx.lineTo(n2.x, n2.y);
+    }
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = isEmergency ? '#f59e0b' : '#38bdf8'; // Amber for emergency, Blue for standard
+    ctx.stroke();
+  }
+
+  // 3. Draw Nodes (Intersections)
+  nodes.forEach(n => {
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, 8, 0, Math.PI * 2);
+    ctx.fillStyle = (n.id === 0) ? '#22c55e' : (n.id === nodes.length - 1) ? '#e11d48' : '#64748b';
     ctx.fill();
+
+    // Node labels
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '10px sans-serif';
+    ctx.fillText(`N${n.id}`, n.x - 6, n.y - 12);
   });
 
-  // S / D labels
-  ctx.font = 'bold 11px Space Grotesk, sans-serif';
-  ctx.fillStyle = getVar('--source');
-  ctx.fillText('S', nodes[SOURCE].x, nodes[SOURCE].y - 14);
-  ctx.fillStyle = getVar('--dest');
-  ctx.fillText('D', nodes[DEST].x, nodes[DEST].y - 14);
-}
+  // 4. Draw Vehicle
+  if (vehicle && vehicle.path && vehicle.pathIndex < vehicle.path.length - 1) {
+    const u = nodes[vehicle.path[vehicle.pathIndex]];
+    const v = nodes[vehicle.path[vehicle.pathIndex + 1]];
 
-function getVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
+    const currentX = u.x + (v.x - u.x) * vehicle.progress;
+    const currentY = u.y + (v.y - u.y) * vehicle.progress;
 
-function animate() {
-  if (!reduceMotion) {
-    dashOffset = (dashOffset + 0.6) % 18;
-    draw();
-    requestAnimationFrame(animate);
+    ctx.beginPath();
+    ctx.arc(currentX, currentY, isEmergency ? 10 : 8, 0, Math.PI * 2);
+    ctx.fillStyle = isEmergency ? '#ef4444' : '#38bdf8';
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
   }
 }
 
-/* ---------- UI wiring ---------- */
-const etaValue = document.getElementById('eta-value');
-const etaDelta = document.getElementById('eta-delta');
-const pathValue = document.getElementById('path-value');
-const blockedCount = document.getElementById('blocked-count');
-const eventLog = document.getElementById('event-log');
-
-function logEvent(text, cls) {
-  const li = document.createElement('li');
-  li.textContent = text;
-  if (cls) li.className = cls;
-  eventLog.appendChild(li);
-  while (eventLog.children.length > 30) eventLog.removeChild(eventLog.firstChild);
-}
-
-function refreshConsole() {
-  const { path, total } = current;
-  etaValue.innerHTML = (total === Infinity ? 'N/A' : total) + ' <span class="unit">units</span>';
-  pathValue.textContent = path.length ? path.map(id => `${nodes[id].r},${nodes[id].c}`).join(' → ') : 'No route available';
-  blockedCount.textContent = edges.filter(e => e.blocked).length;
-
-  if (previousTotal !== total) {
-    if (total === Infinity) logEvent('ROUTE LOST — destination unreachable', 'warn');
-    else if (total > previousTotal) logEvent(`REROUTED — ETA +${total - previousTotal}`, 'warn');
-    else if (previousTotal !== current.total) logEvent(`REROUTED — ETA ${total}`, 'ok');
-    etaDelta.textContent = previousTotal !== Infinity && total !== Infinity
-      ? (total > previousTotal ? `+${total - previousTotal} vs last route` : 'route improved')
-      : '';
-    previousTotal = total;
-  }
-}
-
-function recompute() {
-  current = shortestPath();
-  refreshConsole();
+function gameLoop() {
+  update();
   draw();
+  requestAnimationFrame(gameLoop);
 }
 
+// --- INTERACTIVITY & EVENT HANDLERS ---
 canvas.addEventListener('click', (evt) => {
   const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-  const x = (evt.clientX - rect.left) * scaleX;
-  const y = (evt.clientY - rect.top) * scaleY;
+  const clickX = evt.clientX - rect.left;
+  const clickY = evt.clientY - rect.top;
 
-  let closest = null, closestDist = 14; // px hit-tolerance
+  // Toggle nearest road segment on click
   edges.forEach(e => {
-    const na = nodes[e.a], nb = nodes[e.b];
-    const d = pointToSegmentDist(x, y, na.x, na.y, nb.x, nb.y);
-    if (d < closestDist) { closestDist = d; closest = e; }
-  });
+    const n1 = nodes[e.u];
+    const n2 = nodes[e.v];
+    const distToSegment = distToSegmentSquared({ x: clickX, y: clickY }, n1, n2);
 
-  if (closest) {
-    closest.blocked = !closest.blocked;
-    logEvent(
-      `${closest.blocked ? 'CLOSED' : 'REOPENED'} road (${nodes[closest.a].r},${nodes[closest.a].c})–(${nodes[closest.b].r},${nodes[closest.b].c})`,
-      closest.blocked ? 'warn' : 'ok'
-    );
-    recompute();
-  }
+    if (distToSegment < 100) { // Click tolerance threshold
+      e.blocked = !e.blocked;
+      logEvent(`🚧 Road (Node ${e.u} ↔ Node ${e.v}) ${e.blocked ? 'BLOCKED' : 'UNBLOCKED'}`);
+      
+      // Re-evaluate path from vehicle's current location if road ahead was blocked
+      triggerReroute("Road Closure Event");
+    }
+  });
 });
 
-function pointToSegmentDist(px, py, x1, y1, x2, y2) {
-  const dx = x2 - x1, dy = y2 - y1;
-  const len2 = dx * dx + dy * dy;
-  let t = len2 === 0 ? 0 : ((px - x1) * dx + (py - y1) * dy) / len2;
-  t = Math.max(0, Math.min(1, t));
-  const projX = x1 + t * dx, projY = y1 + t * dy;
-  return Math.hypot(px - projX, py - projY);
+document.getElementById('btnDispatchEmergency').addEventListener('click', () => {
+  isEmergency = !isEmergency;
+  if (isEmergency) {
+    logEvent("🚨 Emergency Mode Activated! Green-wave priority cleared.");
+    triggerReroute("Emergency Dispatch Protocol");
+  } else {
+    logEvent("ℹ️ Returned to normal transit mode.");
+  }
+  updateUI();
+});
+
+document.getElementById('btnReset').addEventListener('click', () => {
+  buildGraph();
+  initVehicle();
+});
+
+function updateUI() {
+  document.getElementById('statusText').innerText = isEmergency ? "🚨 EMERGENCY PRIORITY" : "In Transit (Normal)";
+  document.getElementById('rerouteCountText').innerText = `${rerouteCount} times`;
+  if (vehicle && vehicle.path && vehicle.pathIndex < vehicle.path.length - 1) {
+    document.getElementById('currentPosText').innerText = `Node ${vehicle.path[vehicle.pathIndex]} → Node ${vehicle.path[vehicle.pathIndex + 1]}`;
+  }
 }
 
-document.getElementById('btn-randomize').addEventListener('click', () => {
-  edges.forEach(e => { e.weight = 2 + Math.floor(Math.random() * 8); });
-  logEvent('Traffic conditions randomized', null);
-  recompute();
-});
+function logEvent(msg) {
+  const logContainer = document.getElementById('eventLog');
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.innerText = `[${new Date().toLocaleTimeString().split(' ')[0]}] ${msg}`;
+  logContainer.prepend(entry);
+}
 
-document.getElementById('btn-reset').addEventListener('click', () => {
-  edges.forEach(e => { e.blocked = false; });
-  logEvent('All closures cleared', 'ok');
-  recompute();
-});
+// Helper: Distance squared from point to line segment
+function distToSegmentSquared(p, v, w) {
+  const l2 = (v.x - w.x) ** 2 + (v.y - w.y) ** 2;
+  if (l2 === 0) return (p.x - v.x) ** 2 + (p.y - v.y) ** 2;
+  let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return (p.x - (v.x + t * (w.x - v.x))) ** 2 + (p.y - (v.y + t * (w.y - v.y))) ** 2;
+}
 
-/* ---------- Init ---------- */
-buildGrid();
-current = shortestPath();
-previousTotal = current.total;
-logEvent('System online. Route computed.', 'ok');
-refreshConsole();
-draw();
-if (!reduceMotion) requestAnimationFrame(animate);
+// --- INIT ---
+buildGraph();
+initVehicle();
+gameLoop();
