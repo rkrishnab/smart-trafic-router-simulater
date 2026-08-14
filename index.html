@@ -1,61 +1,82 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Smart Traffic & Emergency Reroute Simulator</title>
-  <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reroute — Live Traffic Rerouting Simulator</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="app-container">
-    <header>
-      <h1>🚦 Smart Traffic & Emergency Reroute Simulator</h1>
-      <p>Real-time graph dynamic re-routing with mid-transit diversion & ETA calculation</p>
-    </header>
 
-    <div class="main-content">
-      <div class="canvas-wrapper">
-        <canvas id="simCanvas" width="600" height="450"></canvas>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <div>
+        <p class="eyebrow">TRAFFIC CONTROL</p>
+        <h1>Reroute Simulator</h1>
+      </div>
+    </div>
+    <div class="status-pill" id="live-pill">
+      <span class="dot"></span> LIVE
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="board">
+      <canvas id="grid" width="800" height="600" aria-label="City road grid, click a road segment to block or unblock it"></canvas>
+      <div class="board-caption">Click any road to simulate a closure — it clears on its own over time. Switch to Emergency to dispatch a priority vehicle.</div>
+    </section>
+
+    <aside class="console" aria-label="Route status console">
+      <div class="mode-toggle" role="group" aria-label="View mode">
+        <button id="mode-standard" class="mode-btn active">Standard</button>
+        <button id="mode-emergency" class="mode-btn">Emergency</button>
       </div>
 
-      <aside class="control-panel">
-        <div class="card">
-          <h3>🎮 Simulator Controls</h3>
-          <p class="help-text">Click any road segment on the canvas to block/unblock it mid-transit.</p>
-          <div class="button-group">
-            <button id="btnDispatchEmergency" class="btn btn-warning">🚨 Dispatch Emergency Vehicle</button>
-            <button id="btnReset" class="btn btn-secondary">🔄 Reset Simulation</button>
-          </div>
-        </div>
+      <div class="console-block" id="dispatch-block">
+        <p class="label">Emergency dispatch</p>
+        <p class="mono-line" id="dispatch-status">Idle</p>
+        <p class="sub" id="dispatch-saved"></p>
+        <button id="btn-dispatch">🚑 Dispatch to incident</button>
+      </div>
 
-        <div class="card metrics-card">
-          <h3>📊 Real-Time Metrics</h3>
-          <div class="metric-row">
-            <span>Vehicle Status:</span>
-            <strong id="statusText">In Transit (Normal)</strong>
-          </div>
-          <div class="metric-row">
-            <span>Current Segment:</span>
-            <strong id="currentPosText">Node 0 → Node 1</strong>
-          </div>
-          <div class="metric-row">
-            <span>Estimated Time (ETA):</span>
-            <strong id="etaText" class="highlight">0.0 s</strong>
-          </div>
-          <div class="metric-row">
-            <span>Route Diverted:</span>
-            <strong id="rerouteCountText">0 times</strong>
-          </div>
-        </div>
+      <div class="console-block">
+        <p class="label">ETA</p>
+        <p class="eta" id="eta-value">— <span class="unit">min</span></p>
+        <p class="sub" id="eta-delta"></p>
+      </div>
 
-        <div class="card log-card">
-          <h3>📋 Event Log</h3>
-          <div id="eventLog" class="log-container"></div>
-        </div>
-      </aside>
-    </div>
-  </div>
+      <div class="console-block">
+        <p class="label">Active path</p>
+        <p class="mono-line" id="path-value">—</p>
+      </div>
 
-  <script src="app.js"></script>
+      <div class="console-block">
+        <p class="label">Roads closed</p>
+        <p class="mono-line" id="blocked-count">0</p>
+      </div>
+
+      <div class="console-block">
+        <p class="label">Closures clearing</p>
+        <ul class="clearing" id="clearing-list"></ul>
+      </div>
+
+      <div class="console-block log-block">
+        <p class="label">Dispatch log</p>
+        <ul class="log" id="event-log"></ul>
+      </div>
+
+      <div class="controls">
+        <button id="btn-randomize">Randomize traffic</button>
+        <button id="btn-reset" class="ghost">Clear closures</button>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="foot">
+    Dijkstra shortest-path recompute · vanilla JS + Canvas, no dependencies
+  </footer>
+
+<script src="app.js"></script>
 </body>
 </html>
